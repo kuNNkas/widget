@@ -7,9 +7,9 @@ export default function Landing() {
   const beforeImg = '/model_1/portret-molodoi-aponskoi-zensiny-s-kurtkoi.jpg';
   // ЗАМЕНИ на реальные имена трёх картинок в /public/result_1
   const afterImgs = [
-    '/public/result_1/jacket_white.jpg',
-    '/public/result_1/jacket.jpg',
-    '/public/result_1/jeans.jpg',
+    '/result_1/jacket_white.jpg',
+    '/result_1/jacket.jpg',
+    '/result_1/jeans.jpg',
   ];
 
   const howModel  = '/model_2/photo_2025-06-20_10-03-35.jpg';
