@@ -1,13 +1,26 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
+import {
+  USE_PROXY,
+  FASHN_BASE,
+  FASHN_API_KEY,
+  MAX_POLL_MS,
+  POLL_INTERVAL_MS,
+  MAX_POLL_INTERVAL_MS,
+  RUN_MAX_RETRIES,
+} from '../config';
 
 type Props = {
   isOpen: boolean;
   onClose: () => void;
-  garmentImageUrl: string; // картинка товара из каталога/модалки (например: /garments/women-dress.png)
+  garmentImageUrl: string;
 };
 
-// === helpers ===
-const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
+const isDataUrl = (s: string) => s.startsWith('data:image/');
+const getRetryAfter = (res: Response, fallback = 15) =>
+  Number(res.headers.get('Retry-After')) || fallback;
+
+const ACTIVE_PRED_LS = 'fashn_active_prediction_id';
 
 async function fileToBase64(file: File): Promise<string> {
   return await new Promise((res, rej) => {
@@ -17,6 +30,7 @@ async function fileToBase64(file: File): Promise<string> {
     r.readAsDataURL(file);
   });
 }
+
 async function resizeToMax(file: File, max = 2000): Promise<File> {
   const url = URL.createObjectURL(file);
   const img = new Image();
@@ -35,37 +49,41 @@ async function resizeToMax(file: File, max = 2000): Promise<File> {
   const ctx = canvas.getContext('2d')!;
   ctx.drawImage(img, 0, 0, w, h);
 
-  const blob: Blob = await new Promise(res => canvas.toBlob(b => res(b!), file.type || 'image/jpeg', 0.95)!);
+  const blob: Blob = await new Promise(res =>
+    canvas.toBlob(b => res(b!), file.type || 'image/jpeg', 0.95)!
+  );
   URL.revokeObjectURL(url);
   return new File([blob], file.name, { type: blob.type });
 }
+
 async function fetchAsBase64(url: string): Promise<string> {
-  // грузим из public (/garments/...) и конвертим в dataURL
   const resp = await fetch(url, { cache: 'no-store' });
   const blob = await resp.blob();
-  const ext = (blob.type.includes('png') ? 'png' : blob.type.includes('jpeg') ? 'jpeg' : 'png');
+  const ext = blob.type.includes('png') ? 'png' : blob.type.includes('jpeg') ? 'jpeg' : 'png';
   const base64 = await new Promise<string>((res, rej) => {
     const r = new FileReader();
     r.onload = () => res(String(r.result));
     r.onerror = rej;
     r.readAsDataURL(blob);
   });
-  // гарантируем префикс data:image/*;base64,
   return base64.startsWith('data:') ? base64 : `data:image/${ext};base64,${base64}`;
 }
-const isDataUrl = (s: string) => s.startsWith('data:image/');
+
+// ————— API-вызовы в зависимости от режима —————
+const runEndpoint = () => USE_PROXY ? '/api/tryon/run' : `${FASHN_BASE}/run`;
+const statusEndpoint = (id: string) =>
+  USE_PROXY ? `/api/tryon/status/${id}` : `${FASHN_BASE}/predictions/${id}`;
 
 export default function TryOnWidget({ isOpen, onClose, garmentImageUrl }: Props) {
   const [userFile, setUserFile] = useState<File | null>(null);
   const [userPreview, setUserPreview] = useState<string | null>(null);
-
-  const [apiKey, setApiKey] = useState<string>(() => localStorage.getItem('fashn_api_key') || '');
   const [loading, setLoading] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus]   = useState<string | null>(null);
+  const [error, setError]     = useState<string | null>(null);
   const [results, setResults] = useState<string[]>([]);
 
   const inputRef = useRef<HTMLInputElement>(null);
+  const closedRef = useRef(false);
 
   const onPick = () => inputRef.current?.click();
 
@@ -96,156 +114,171 @@ export default function TryOnWidget({ isOpen, onClose, garmentImageUrl }: Props)
     }
   }, []);
 
-  const disabledRun = useMemo(() => !userFile || !apiKey || loading, [userFile, apiKey, loading]);
+  const disabledRun = useMemo(() => !userFile || loading, [userFile, loading]);
+
+  // ——— helper: опрос одного prediction с уважением Retry-After и бэкоффом
+  const pollPrediction = useCallback(async (predId: string) => {
+    const start = Date.now();
+    let interval = POLL_INTERVAL_MS;
+
+    while (Date.now() - start < MAX_POLL_MS) {
+      if (closedRef.current) throw new Error('Виджет закрыт пользователем');
+
+      const st = await fetch(statusEndpoint(predId), {
+        method: 'GET',
+        headers: USE_PROXY
+          ? {}
+          : { 'Authorization': `Bearer ${FASHN_API_KEY}` },
+        cache: 'no-store'
+      });
+
+      if (st.status === 429) {
+        const wait = getRetryAfter(st, Math.ceil(interval/1000) || 10);
+        setStatus(`Лимит статусов. Жду ~${wait} сек…`);
+        await delay(wait * 1000);
+        interval = Math.min(Math.max(interval * 1.5, POLL_INTERVAL_MS), MAX_POLL_INTERVAL_MS);
+        continue;
+      }
+
+      if (!st.ok) {
+        const txt = await st.text().catch(()=> '');
+        throw new Error(`Status ${st.status}: ${txt}`);
+      }
+
+      const data: any = await st.json();
+      if (data.status === 'completed') return data.output || [];
+      if (data.status === 'failed')   throw new Error(data?.error?.message || 'Prediction failed');
+
+      setStatus(`Статус: ${data.status}…`);
+      await delay(interval);
+      interval = Math.min(interval + 500, MAX_POLL_INTERVAL_MS);
+    }
+    throw new Error('Превышено время ожидания (3 минуты)');
+  }, []);
+
+  // ——— helper: /run с повторами на 429 (уважает Retry-After)
+  const runOnce = useCallback(async (payload: any) => {
+    for (let attempt = 1; attempt <= RUN_MAX_RETRIES; attempt++) {
+      const resp = await fetch(runEndpoint(), {
+        method: 'POST',
+        headers: {
+          ...(USE_PROXY ? {} : { 'Authorization': `Bearer ${FASHN_API_KEY}` }),
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+
+      if (resp.status === 429) {
+        const wait = getRetryAfter(resp, 15);
+        setStatus(`Сервис занят (run). Жду ~${wait} сек… [${attempt}/${RUN_MAX_RETRIES}]`);
+        await delay(wait * 1000);
+        continue;
+      }
+
+      if (!resp.ok) {
+        const txt = await resp.text().catch(()=> '');
+        throw new Error(`Run failed ${resp.status}: ${txt}`);
+      }
+
+      return await resp.json();
+    }
+    throw new Error('Сервис занят. Повторите позже.');
+  }, []);
 
   const runTryOn = useCallback(async () => {
     try {
+      closedRef.current = false;
       setError(null);
       setResults([]);
-      if (!apiKey) { setError('Введите API key'); return; }
-      if (!userFile) { setError('Загрузите фото'); return; }
+      if (!userFile) throw new Error('Загрузите фото');
 
-      localStorage.setItem('fashn_api_key', apiKey);
       setLoading(true);
       setStatus('Подготавливаем изображения…');
 
-      // 1) подготовка изображений (user → base64, garment → base64)
+      // 0) Проверка: не идёт ли уже предыдущее задание
+      const existing = localStorage.getItem(ACTIVE_PRED_LS);
+      if (existing) {
+        setStatus('Обнаружен активный запуск — подключаюсь…');
+        try {
+          const out = await pollPrediction(existing);
+          setResults(out);
+          setStatus('Готово');
+          setLoading(false);
+          localStorage.removeItem(ACTIVE_PRED_LS);
+          return;
+        } catch {
+          // если сломалось — сбрасываем «залежавшийся» id и продолжаем новый run
+          localStorage.removeItem(ACTIVE_PRED_LS);
+        }
+      }
+
+      // 1) подготовка изображений
       const resized = await resizeToMax(userFile);
       const modelBase64 = await fileToBase64(resized);
-
       const garmentBase64 = isDataUrl(garmentImageUrl)
         ? garmentImageUrl
         : await fetchAsBase64(garmentImageUrl);
 
-      // 2) RUN
-      setStatus('Отправляем запрос /v1/run…');
-      const runResp = await fetch('https://api.fashn.ai/v1/run', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model_name: 'tryon-v1.6',
-          inputs: {
-            model_image: modelBase64,
-            garment_image: garmentBase64,
-            garment_photo_type: 'auto',
-            category: 'one-pieces',      // при платье — one-pieces; можно сделать маппинг по товару
-            mode: 'balanced',
-            segmentation_free: true,
-            seed: Math.floor(Math.random() * 1_000_000),
-            num_samples: 1
-          }
-        })
+      // 2) /run
+      setStatus('Отправляем /run…');
+      const runJson: any = await runOnce({
+        model_name: 'tryon-v1.6',
+        inputs: {
+          model_image: modelBase64,
+          garment_image: garmentBase64,
+          garment_photo_type: 'auto',
+          category: 'one-pieces',
+          mode: 'balanced',
+          segmentation_free: true,
+          seed: Math.floor(Math.random() * 1_000_000),
+          num_samples: 1
+        }
       });
 
-      if (runResp.status === 401 || runResp.status === 403) {
-        throw new Error('Unauthorized: проверьте API key');
-      }
-      if (runResp.status === 429) {
-        throw new Error('Rate limit: попробуйте позже');
-      }
-      if (!runResp.ok) {
-        const txt = await runResp.text();
-        throw new Error(`Run failed: ${txt}`);
-      }
-      const runJson: any = await runResp.json();
       const predId = runJson?.id;
       if (!predId) throw new Error('Не получили prediction id');
 
-      // 3) POLL
-      // 3) POLL (надёжно, с анти-гонкой и хедером)
-      setStatus(`Генерация… id=${predId}`);
-      console.log('[FASHN] poll start, id =', predId);
+      // 3) сохраняем активный id и поллим
+      localStorage.setItem(ACTIVE_PRED_LS, predId);
+      setStatus('Генерация…');
 
-      const pollStart = Date.now();
-      const maxMs = 180_000;
-
-      // анти-гонка: фиксируем "мой" id, чтобы не поймать старый результат
-      const myPredId = predId;
-      let lastStatus = 'starting';
-
-      while (Date.now() - pollStart < maxMs) {
-        await delay(2000);
-
-        // если во время ожидания пользователь запустил новый run, выходим
-        if (myPredId !== predId) {
-          console.log('[FASHN] poll aborted: newer run started', { myPredId, current: predId });
-          return;
-        }
-
-        const st = await fetch(`https://api.fashn.ai/v1/status/${myPredId}`, {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'Accept': 'application/json'
-          },
-          mode: 'cors',
-          cache: 'no-store',
-          referrerPolicy: 'strict-origin-when-cross-origin'
-        });
-
-        // Явно обрабатываем самые частые кейсы
-        if (st.status === 401 || st.status === 403) {
-          throw new Error('Unauthorized (401/403): заголовок Authorization не дошёл или ключ неверен.');
-        }
-        if (st.status === 404) {
-          throw new Error(`404: prediction не найден. Проверь, что поллишь ровно тот id, который вернул /v1/run (${myPredId}).`);
-        }
-
-        if (!st.ok) {
-          const txt = await st.text();
-          throw new Error(`Status check failed ${st.status}: ${txt}`);
-        }
-
-        const data: any = await st.json();
-        lastStatus = data?.status ?? lastStatus;
-
-        if (data.status === 'completed') {
-          const out: string[] = data.output || [];
-          setResults(out);
-          setStatus('Готово');
-          setLoading(false);
-          console.log('[FASHN] completed, results:', out);
-          return;
-        }
-        if (data.status === 'failed') {
-          throw new Error(data?.error?.message || 'Prediction failed');
-        }
-
-        setStatus(`Статус: ${lastStatus}… id=${myPredId}`);
-      }
-
-      throw new Error('Превышено время ожидания (3 минуты)');
+      const out = await pollPrediction(predId);
+      setResults(out);
+      setStatus('Готово');
+      setLoading(false);
+      localStorage.removeItem(ACTIVE_PRED_LS);
 
     } catch (e: any) {
       setLoading(false);
       setStatus(null);
       setError(e?.message || 'Ошибка запроса');
     }
-  }, [apiKey, userFile, garmentImageUrl]);
+  }, [userFile, garmentImageUrl, pollPrediction, runOnce]);
+
+  // При закрытии окна прекращаем любые ожидания
+  const handleClose = () => {
+    closedRef.current = true;
+    onClose();
+  };
 
   if (!isOpen) return null;
 
   return (
-    <dialog open className="tryon-modal" onClose={onClose}>
+    <dialog open className="tryon-modal" onClose={handleClose}>
       <div className="tryon-modal__content">
-        <button className="tryon-modal__close" onClick={onClose} aria-label="Закрыть">×</button>
+        <button className="tryon-modal__close" onClick={handleClose} aria-label="Закрыть">×</button>
 
         <div className="tryon-modal__title">
-          Онлайн-примерка
-          <span className="muted" style={{ marginLeft: 8, fontWeight: 500 }}>
-            (FASHN API)
-          </span>
+          Онлайн-примерка <span className="muted" style={{ marginLeft: 8, fontWeight: 500 }}>(FASHN API)</span>
         </div>
 
         <div className="tryon-grid">
-          {/* Левая колонка — дропзона пользователя */}
+          {/* Левая колонка — загрузка фото */}
           <div
             className="tryon-drop"
             onDrop={onDrop}
             onDragOver={(e) => e.preventDefault()}
+            onClick={onPick}
           >
             {userPreview ? (
               <div className="tryon-drop__preview">
@@ -253,18 +286,18 @@ export default function TryOnWidget({ isOpen, onClose, garmentImageUrl }: Props)
                 <div className="tryon-drop__actions">
                   <button
                     className="btn btn--ghost"
-                    onClick={() => { setUserFile(null); setUserPreview(null); }}
+                    onClick={(e) => { e.stopPropagation(); setUserFile(null); setUserPreview(null); }}
                     disabled={loading}
                   >
                     Очистить
                   </button>
-                  <button className="btn" onClick={() => inputRef.current?.click()} disabled={loading}>
+                  <button className="btn" onClick={(e)=>{ e.stopPropagation(); onPick(); }} disabled={loading}>
                     Заменить
                   </button>
                 </div>
               </div>
             ) : (
-              <div className="tryon-drop__placeholder" onClick={() => inputRef.current?.click()}>
+              <div className="tryon-drop__placeholder">
                 <div className="tryon-upload-icon">⤴</div>
                 <div><strong>Загрузите своё фото</strong> или перетащите файл сюда</div>
                 <div className="muted">Полный рост предпочтителен · JPG/PNG</div>
@@ -273,30 +306,15 @@ export default function TryOnWidget({ isOpen, onClose, garmentImageUrl }: Props)
             <input ref={inputRef} type="file" accept="image/*" hidden onChange={onChange} />
           </div>
 
-          {/* Правая колонка — товар + ключ + статус */}
+          {/* Правая колонка — товар + статус */}
           <div className="tryon-product">
             <div className="tryon-product__image">
               <img src={garmentImageUrl} alt="Товар" />
             </div>
 
-            <label className="muted" style={{ fontSize: 12 }}>FASHN API key</label>
-            <input
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="fa_..."
-              style={{
-                width: '100%', padding: '10px 12px', border: '1px solid #e5e7eb',
-                borderRadius: 10, outline: 'none'
-              }}
-              disabled={loading}
-            />
-
-            {status && (
-              <div className="muted" style={{ textAlign: 'center' }}>
-                {loading ? '⏳ ' : '✅ '}{status}
-              </div>
-            )}
+            {status && <div className="muted" style={{ textAlign: 'center' }}>
+              {loading ? '⏳ ' : '✅ '}{status}
+            </div>}
             {error && <div className="tryon-error">{error}</div>}
 
             <button className="btn" onClick={runTryOn} disabled={disabledRun}>
@@ -305,7 +323,6 @@ export default function TryOnWidget({ isOpen, onClose, garmentImageUrl }: Props)
           </div>
         </div>
 
-        {/* Результаты */}
         {!!results.length && (
           <div style={{ padding: '0 16px 16px' }}>
             <div className="tryon-results">
@@ -320,7 +337,7 @@ export default function TryOnWidget({ isOpen, onClose, garmentImageUrl }: Props)
         )}
 
         <div className="tryon-footer">
-          <button className="btn btn--ghost" onClick={onClose} disabled={loading}>Закрыть</button>
+          <button className="btn btn--ghost" onClick={handleClose} disabled={loading}>Закрыть</button>
         </div>
       </div>
     </dialog>
