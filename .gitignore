@@ -14,29 +14,7 @@ dist-ssr
 .vite
 
 /node_modules
-/.next
-/out
-/build
-/coverage
-/dist
-/dist-ssr
-/public
-/src
-/styles
-/types
-/utils
-/vite.config.ts
-/tsconfig.json
-/package.json
-/package-lock.json
-/README.md
-/LICENSE
-/CHANGELOG.md
-/CONTRIBUTING.md
-/CODE_OF_CONDUCT.md
-/SECURITY.md
-/PATENTS.md
-/PATENTS.md
+
 
 # Editor directories and files
 .vscode/*
