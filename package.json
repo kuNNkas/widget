@@ -8,7 +8,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview --port 4173",
-    "vercel-dev": "vercel dev"
+    "vercel-dev": "vercel dev",
+    "dev:proxy": "tsx src/server/index.ts",
+    "dev:all": "concurrently -k \"npm:dev\" \"npm:dev:proxy\""
   },
   "dependencies": {
     "react": "^18.3.1",

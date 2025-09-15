@@ -1,28 +1,48 @@
-// api/tryon/status.ts
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-const BASE = process.env.FASHN_BASE ?? 'https://api.fashn.ai/v1';
-const KEY  = process.env.FASHN_API_KEY;
+const FASHN_BASE = 'https://api.fashn.ai/v1';
+
+function cors(res: VercelResponse) {
+  res.setHeader('Access-Control-Allow-Origin', '*');          // при желании ограничьте доменом
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'GET') return res.status(405).send('Method Not Allowed');
-  if (!KEY) return res.status(500).json({ error: 'ConfigError', message: 'FASHN_API_KEY is missing' });
+  cors(res);
 
-  const id = String(req.query.id || '').trim();
-  if (!id) return res.status(400).json({ error: 'BadRequest', message: 'Missing id' });
+  if (req.method === 'OPTIONS') {
+    res.status(204).end();
+    return;
+  }
+  if (req.method !== 'GET') {
+    res.setHeader('Allow', 'GET,OPTIONS');
+    res.status(405).json({ error: 'MethodNotAllowed', message: 'Use GET /api/tryon/status/:id' });
+    return;
+  }
+
+  const apiKey = process.env.FASHN_API_KEY;
+  if (!apiKey) {
+    res.status(500).json({ error: 'ServerMisconfig', message: 'FASHN_API_KEY is missing' });
+    return;
+  }
+
+  const { id } = req.query;
+  if (!id || typeof id !== 'string') {
+    res.status(400).json({ error: 'BadRequest', message: 'status id is required' });
+    return;
+  }
 
   try {
-    const r = await fetch(`${BASE}/predictions/${id}`, {
+    // у FASHN корректный статус-эндпоинт — /predictions/:id
+    const r = await fetch(`${FASHN_BASE}/predictions/${id}`, {
       method: 'GET',
-      headers: { 'Authorization': `Bearer ${KEY}` }
+      headers: { 'Authorization': `Bearer ${apiKey}` },
     });
-
-    const retry = r.headers.get('Retry-After');
-    if (retry) res.setHeader('Retry-After', retry);
 
     const text = await r.text();
     res.status(r.status).send(text);
   } catch (e: any) {
-    res.status(500).json({ error: 'ProxyError', message: e?.message || 'Failed to call FASHN /predictions/:id' });
+    res.status(502).json({ error: 'UpstreamError', message: e?.message || 'Fetch to FASHN failed' });
   }
 }

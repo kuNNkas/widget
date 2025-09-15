@@ -1,31 +1,48 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-const FASHN_BASE = process.env.FASHN_BASE || 'https://api.fashn.ai/v1';
-const API_KEY = process.env.FASHN_API_KEY!;
+const FASHN_BASE = 'https://api.fashn.ai/v1';
+
+function cors(res: VercelResponse) {
+  res.setHeader('Access-Control-Allow-Origin', '*');          // при желании ограничьте доменом
+  res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST') return res.status(405).send('Method Not Allowed');
-  if (!API_KEY) return res.status(500).json({ error: 'ServerMisconfig', message: 'No API key configured' });
+  cors(res);
+
+  if (req.method === 'OPTIONS') {
+    res.status(204).end();
+    return;
+  }
+  if (req.method !== 'POST') {
+    res.setHeader('Allow', 'POST,OPTIONS');
+    res.status(405).json({ error: 'MethodNotAllowed', message: 'Use POST /api/tryon/run' });
+    return;
+  }
+
+  const apiKey = process.env.FASHN_API_KEY;
+  if (!apiKey) {
+    res.status(500).json({ error: 'ServerMisconfig', message: 'FASHN_API_KEY is missing' });
+    return;
+  }
 
   try {
+    const body = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+
     const r = await fetch(`${FASHN_BASE}/run`, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${API_KEY}`,
-        'Content-Type': 'application/json'
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
       },
-      body: JSON.stringify(req.body ?? {})
+      body,
     });
 
-    // пробрасываем 429 с Retry-After, чтобы фронт мог подождать
-    if (r.status === 429) {
-      const retry = r.headers.get('Retry-After') ?? '15';
-      res.setHeader('Retry-After', retry);
-    }
-
+    // пробрасываем тело/статус как есть
     const text = await r.text();
     res.status(r.status).send(text);
   } catch (e: any) {
-    res.status(500).json({ error: 'ProxyError', message: e?.message || 'Unknown error' });
+    res.status(502).json({ error: 'UpstreamError', message: e?.message || 'Fetch to FASHN failed' });
   }
 }
