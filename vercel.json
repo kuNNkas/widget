@@ -1,6 +1,9 @@
 {
   "functions": {
-    "api/tryon/*.ts": {
+    "api/tryon/run.ts": {
+      "runtime": "nodejs20.x"
+    },
+    "api/tryon/status.ts": {
       "runtime": "nodejs20.x"
     }
   }
