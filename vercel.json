@@ -2,8 +2,7 @@
   "version": 2,
   "functions": {
     "api/tryon/**": {
-      "runtime": "edge",
-      "regions": ["arn1", "fra1", "iad1"]
+      "runtime": "edge"
     }
   }
 }
