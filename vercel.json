@@ -1,10 +1,10 @@
 {
   "functions": {
     "api/tryon/run.ts": {
-      "runtime": "nodejs20.x"
+      "runtime": "nodejs18.x"
     },
     "api/tryon/status.ts": {
-      "runtime": "nodejs20.x"
+      "runtime": "nodejs18.x"
     }
   }
 }
