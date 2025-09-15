@@ -1,6 +1,6 @@
 {
-  "version": 2,
-  "functions": {
-    "api/tryon/*.ts": { "runtime": "nodejs22.x" }
-  }
+  "routes": [
+    { "src": "/api/tryon/run", "dest": "api/tryon/run.ts" },
+    { "src": "/api/tryon/status", "dest": "api/tryon/status.ts" }
+  ]
 }
