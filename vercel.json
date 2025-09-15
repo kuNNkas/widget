@@ -1,9 +1,4 @@
 {
-  "functions": {
-    "api/tryon/*": {
-      "runtime": "edge"
-    }
-  },
   "routes": [
     { "src": "/api/tryon/run", "dest": "api/tryon/run.ts" },
     { "src": "/api/tryon/status", "dest": "api/tryon/status.ts" }
