@@ -1,4 +1,4 @@
-export const config = { runtime: 'edge' };
+export const runtime = 'edge';
 
 const ORIGIN = process.env.ALLOWED_ORIGIN ?? '*';
 const FASHN_BASE = 'https://api.fashn.ai/v1';
@@ -6,7 +6,7 @@ const FASHN_BASE = 'https://api.fashn.ai/v1';
 function cors(extra: HeadersInit = {}) {
   return {
     'Access-Control-Allow-Origin': ORIGIN,
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    'Access-Control-Allow-Methods': 'GET,OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type,Authorization,X-Requested-With',
     'Access-Control-Max-Age': '86400',
     ...extra,
@@ -14,12 +14,10 @@ function cors(extra: HeadersInit = {}) {
 }
 
 export default async function handler(req: Request): Promise<Response> {
-  // Preflight
   if (req.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: cors() as HeadersInit });
   }
-
-  if (req.method !== 'POST') {
+  if (req.method !== 'GET') {
     return new Response('Method Not Allowed', { status: 405, headers: cors() as HeadersInit });
   }
 
@@ -31,27 +29,25 @@ export default async function handler(req: Request): Promise<Response> {
     });
   }
 
-  try {
-    const body = await req.json();
+  const url = new URL(req.url);
+  const id = url.searchParams.get('id');
+  if (!id) {
+    return new Response('Missing query param "id"', { status: 400, headers: cors() });
+  }
 
-    const upstream = await fetch(`${FASHN_BASE}/run`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-      },
-      body: JSON.stringify(body),
+  try {
+    const upstream = await fetch(`${FASHN_BASE}/predictions/${id}`, {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Accept': 'application/json' },
     });
 
-    // Пробрасываем ответ как есть, но с CORS
     const text = await upstream.text();
     return new Response(text, {
       status: upstream.status,
       headers: {
         ...cors(),
         'Content-Type': upstream.headers.get('Content-Type') || 'application/json',
-        'Retry-After': upstream.headers.get('Retry-After') || '',
+        ...(upstream.headers.get('Retry-After') ? { 'Retry-After': upstream.headers.get('Retry-After')! } : {})
       },
     });
   } catch (e: any) {
