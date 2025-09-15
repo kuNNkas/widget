@@ -1,29 +1,22 @@
-export const runtime = 'nodejs20.x'; // или удалите для автоопределения
-
-const ORIGIN = process.env.ALLOWED_ORIGIN ?? '*';
-const FASHN_BASE = 'https://api.fashn.ai/v1';
-
-function cors(extra: HeadersInit = {}) {
-  return {
-    'Access-Control-Allow-Origin': ORIGIN,
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type,Authorization,X-Requested-With',
-    'Access-Control-Max-Age': '86400',
-    ...extra,
-  };
-}
-
 export default async function handler(req: Request): Promise<Response> {
+  console.log('API called:', req.method, req.url);
+  
   // Preflight
   if (req.method === 'OPTIONS') {
+    console.log('OPTIONS request');
     return new Response(null, { status: 204, headers: cors() as HeadersInit });
   }
+  
   if (req.method !== 'POST') {
+    console.log('Not POST method:', req.method);
     return new Response('Method Not Allowed', { status: 405, headers: cors() as HeadersInit });
   }
 
   const apiKey = process.env.FASHN_API_KEY;
+  console.log('API key exists:', !!apiKey);
+  
   if (!apiKey) {
+    console.log('No API key');
     return new Response('Server misconfigured: FASHN_API_KEY is missing', {
       status: 500,
       headers: cors(),
@@ -32,6 +25,8 @@ export default async function handler(req: Request): Promise<Response> {
 
   try {
     const body = await req.json();
+    console.log('Request body received:', Object.keys(body));
+    console.log('Making upstream request to:', `${FASHN_BASE}/run`);
 
     const upstream = await fetch(`${FASHN_BASE}/run`, {
       method: 'POST',
@@ -43,7 +38,10 @@ export default async function handler(req: Request): Promise<Response> {
       body: JSON.stringify(body),
     });
 
+    console.log('Upstream status:', upstream.status);
     const text = await upstream.text();
+    console.log('Upstream response length:', text.length);
+    
     return new Response(text, {
       status: upstream.status,
       headers: {
@@ -53,6 +51,7 @@ export default async function handler(req: Request): Promise<Response> {
       },
     });
   } catch (e: any) {
+    console.error('Error in API:', e);
     return new Response(`Upstream error: ${e?.message || 'unknown'}`, {
       status: 502,
       headers: cors(),
