@@ -1,3 +1,4 @@
+export const runtime = 'edge';
 
 const ORIGIN = process.env.ALLOWED_ORIGIN ?? '*';
 const FASHN_BASE = 'https://api.fashn.ai/v1';

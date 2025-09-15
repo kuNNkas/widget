@@ -1,8 +1,6 @@
 {
   "version": 2,
   "functions": {
-    "api/tryon/*.ts": {
-      "runtime": "edge"
-    }
+    "api/tryon/*.ts": { "runtime": "nodejs22.x" }
   }
 }
