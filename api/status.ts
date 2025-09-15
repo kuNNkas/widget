@@ -1,48 +1,63 @@
-import type { VercelRequest, VercelResponse } from '@vercel/node';
+export const config = { runtime: 'edge' };
 
+const ORIGIN = process.env.ALLOWED_ORIGIN ?? '*';
 const FASHN_BASE = 'https://api.fashn.ai/v1';
 
-function cors(res: VercelResponse) {
-  res.setHeader('Access-Control-Allow-Origin', '*');          // при желании ограничьте доменом
-  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+function cors(extra: HeadersInit = {}) {
+  return {
+    'Access-Control-Allow-Origin': ORIGIN,
+    'Access-Control-Allow-Methods': 'GET,OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type,Authorization,X-Requested-With',
+    'Access-Control-Max-Age': '86400',
+    ...extra,
+  };
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  cors(res);
-
+export default async function handler(req: Request): Promise<Response> {
   if (req.method === 'OPTIONS') {
-    res.status(204).end();
-    return;
+    return new Response(null, { status: 204, headers: cors() as HeadersInit });
   }
+
   if (req.method !== 'GET') {
-    res.setHeader('Allow', 'GET,OPTIONS');
-    res.status(405).json({ error: 'MethodNotAllowed', message: 'Use GET /api/tryon/status/:id' });
-    return;
+    return new Response('Method Not Allowed', { status: 405, headers: cors() as HeadersInit });
   }
 
   const apiKey = process.env.FASHN_API_KEY;
   if (!apiKey) {
-    res.status(500).json({ error: 'ServerMisconfig', message: 'FASHN_API_KEY is missing' });
-    return;
+    return new Response('Server misconfigured: FASHN_API_KEY is missing', {
+      status: 500,
+      headers: cors(),
+    });
   }
 
-  const { id } = req.query;
-  if (!id || typeof id !== 'string') {
-    res.status(400).json({ error: 'BadRequest', message: 'status id is required' });
-    return;
+  const url = new URL(req.url);
+  const id = url.searchParams.get('id');
+  if (!id) {
+    return new Response('Missing query param "id"', { status: 400, headers: cors() });
   }
 
   try {
-    // у FASHN корректный статус-эндпоинт — /predictions/:id
-    const r = await fetch(`${FASHN_BASE}/predictions/${id}`, {
+    const upstream = await fetch(`${FASHN_BASE}/predictions/${id}`, {
       method: 'GET',
-      headers: { 'Authorization': `Bearer ${apiKey}` },
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Accept': 'application/json',
+      },
     });
 
-    const text = await r.text();
-    res.status(r.status).send(text);
+    const text = await upstream.text();
+    return new Response(text, {
+      status: upstream.status,
+      headers: {
+        ...cors(),
+        'Content-Type': upstream.headers.get('Content-Type') || 'application/json',
+        'Retry-After': upstream.headers.get('Retry-After') || '',
+      },
+    });
   } catch (e: any) {
-    res.status(502).json({ error: 'UpstreamError', message: e?.message || 'Fetch to FASHN failed' });
+    return new Response(`Upstream error: ${e?.message || 'unknown'}`, {
+      status: 502,
+      headers: cors(),
+    });
   }
 }
