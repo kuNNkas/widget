@@ -1,4 +1,4 @@
-export const runtime = 'edge';
+export const runtime = 'nodejs20.x'; // или удалите для автоопределения
 
 const ORIGIN = process.env.ALLOWED_ORIGIN ?? '*';
 const FASHN_BASE = 'https://api.fashn.ai/v1';
@@ -43,14 +43,12 @@ export default async function handler(req: Request): Promise<Response> {
       body: JSON.stringify(body),
     });
 
-    // Пробрасываем ответ и важные заголовки (+ CORS)
     const text = await upstream.text();
     return new Response(text, {
       status: upstream.status,
       headers: {
         ...cors(),
         'Content-Type': upstream.headers.get('Content-Type') || 'application/json',
-        // полезно при 429
         ...(upstream.headers.get('Retry-After') ? { 'Retry-After': upstream.headers.get('Retry-After')! } : {})
       },
     });

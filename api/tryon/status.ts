@@ -1,4 +1,4 @@
-export const runtime = 'edge';
+export const runtime = 'nodejs20.x'; // или удалите для автоопределения
 
 const ORIGIN = process.env.ALLOWED_ORIGIN ?? '*';
 const FASHN_BASE = 'https://api.fashn.ai/v1';
