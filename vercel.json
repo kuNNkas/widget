@@ -2,7 +2,7 @@
   "version": 2,
   "functions": {
     "api/tryon/**": {
-      "runtime": "edge"
+      "runtime": "nodejs20.x"
     }
   }
 }
